@@ -39,6 +39,15 @@ RESOLVE_SCRIPT_PATH = (
 RESOLVE_BIN             = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/MacOS/Resolve"
 RESOLVE_STARTUP_TIMEOUT = 120  # seconds
 
+# ---------------------------------------------------------------------------
+# Default proxy settings — override per-call via function args, or per-run
+# via CLI flags (--width, --height, --suffix, --output-dir). Change these if
+# you want new defaults everywhere.
+# ---------------------------------------------------------------------------
+DEFAULT_WIDTH   = 1920
+DEFAULT_HEIGHT  = 1080
+DEFAULT_SUFFIX  = "_proxy.mp4"   # appended to the input's basename when no output path is given
+
 if RESOLVE_SCRIPT_PATH not in sys.path:
     sys.path.insert(0, RESOLVE_SCRIPT_PATH)
 
@@ -91,7 +100,7 @@ def ensure_resolve_running():
     sys.exit(1)
 
 
-def _render_clip(resolve, input_path, output_path, width=1280, height=720):
+def _render_clip(resolve, input_path, output_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
     """
     Render a single clip within an already-connected Resolve session.
     Creates and tears down its own scratch project so clips don't interfere
@@ -183,7 +192,8 @@ def _render_clip(resolve, input_path, output_path, width=1280, height=720):
         return None
 
 
-def transcode(input_path, output_path=None, width=1280, height=720):
+def transcode(input_path, output_path=None, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
+              suffix=DEFAULT_SUFFIX):
     """
     Transcode a single input_path to an H.264 .mp4 proxy via headless
     DaVinci Resolve. Connects, renders, and quits Resolve (if this call
@@ -192,22 +202,25 @@ def transcode(input_path, output_path=None, width=1280, height=720):
     Returns the output path on success, or None on failure.
     """
     results = transcode_batch([input_path], output_paths=[output_path] if output_path else None,
-                               width=width, height=height)
+                               width=width, height=height, suffix=suffix)
     return results[input_path]
 
 
-def transcode_batch(input_paths, output_paths=None, output_dir=None, width=1280, height=720):
+def transcode_batch(input_paths, output_paths=None, output_dir=None,
+                     width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, suffix=DEFAULT_SUFFIX):
     """
     Transcode a queue of clips to H.264 .mp4 proxies, launching Resolve only
     once for the whole batch (much faster than one launch per file).
 
     input_paths:  list of source media paths (mixed formats OK — BRAW, R3D, MXF, etc.)
     output_paths: optional list of output paths, same length/order as input_paths.
-                  If omitted, defaults to '<input>_DR.mp4' next to each source
+                  If omitted, defaults to '<input><suffix>' next to each source
                   (or inside output_dir, if given).
     output_dir:   optional directory to place all outputs in (ignored per-file
                   if output_paths is given). Defaults to next to each source file.
     width/height: proxy resolution (defaults to 1280x720)
+    suffix:       appended to the input's basename when no output path is given
+                  (defaults to "_DR.mp4")
 
     Returns a dict mapping input_path -> output_path (or None on failure).
     """
@@ -221,9 +234,9 @@ def transcode_batch(input_paths, output_paths=None, output_dir=None, width=1280,
         if output_path is None:
             base, _ = os.path.splitext(input_path)
             if output_dir:
-                output_path = os.path.join(output_dir, os.path.basename(base) + "_DR.mp4")
+                output_path = os.path.join(output_dir, os.path.basename(base) + suffix)
             else:
-                output_path = base + "_DR.mp4"
+                output_path = base + suffix
         resolved_outputs.append(output_path)
 
     print("")
@@ -252,23 +265,32 @@ def transcode_batch(input_paths, output_paths=None, output_dir=None, width=1280,
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python3 resolve_proxy.py <input_path> [output_path]")
-        print("       python3 resolve_proxy.py <input1> <input2> ... <inputN>")
-        sys.exit(1)
+    import argparse
 
-    args = sys.argv[1:]
+    parser = argparse.ArgumentParser(
+        description="Headless DaVinci Resolve proxy generator (single file or batch)."
+    )
+    parser.add_argument("inputs", nargs="+", help="one or more source media files")
+    parser.add_argument("-o", "--output", help="explicit output .mp4 path (single-file only)")
+    parser.add_argument("--output-dir", help="directory to place all outputs in (batch)")
+    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help=f"proxy width (default {DEFAULT_WIDTH})")
+    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help=f"proxy height (default {DEFAULT_HEIGHT})")
+    parser.add_argument("--suffix", default=DEFAULT_SUFFIX,
+                         help=f"filename suffix when no explicit output is given (default '{DEFAULT_SUFFIX}')")
+    args = parser.parse_args()
+
+    if args.output and len(args.inputs) > 1:
+        parser.error("--output can only be used with a single input file")
 
     print("")
     print("=" * 45)
     print("  Resolve Proxy Generator")
     print("=" * 45)
 
-    # Two args where the second doesn't look like a source clip we'd batch
-    # (i.e. exactly 2 args and the second ends in .mp4) => single file + explicit output
-    if len(args) == 2 and args[1].lower().endswith(".mp4"):
-        print(f"  Input: {args[0]}")
-        transcode(args[0], args[1])
+    if len(args.inputs) == 1:
+        print(f"  Input: {args.inputs[0]}")
+        transcode(args.inputs[0], args.output, width=args.width, height=args.height, suffix=args.suffix)
     else:
-        print(f"  Queue: {len(args)} file(s)")
-        transcode_batch(args)
+        print(f"  Queue: {len(args.inputs)} file(s)")
+        transcode_batch(args.inputs, output_dir=args.output_dir,
+                         width=args.width, height=args.height, suffix=args.suffix)
