@@ -20,8 +20,10 @@ Usage as a library (queue of files — launches/quits Resolve only once):
     ])
 
 Usage from the command line (one or more files):
-    python3 resolve_proxy.py /path/to/clip.braw [/path/to/output.mp4]
-    python3 resolve_proxy.py /path/to/clip1.r3d /path/to/clip2.mxf ...
+    python3 resolve_proxy.py /path/to/clip.braw
+    python3 resolve_proxy.py /path/to/clip.braw -o /path/to/output.mp4
+    python3 resolve_proxy.py /path/to/clip1.r3d /path/to/clip2.mxf --output-dir /proxies
+    python3 resolve_proxy.py --help
 """
 
 import sys
@@ -218,9 +220,9 @@ def transcode_batch(input_paths, output_paths=None, output_dir=None,
                   (or inside output_dir, if given).
     output_dir:   optional directory to place all outputs in (ignored per-file
                   if output_paths is given). Defaults to next to each source file.
-    width/height: proxy resolution (defaults to 1280x720)
+    width/height: proxy resolution (defaults to 1920x1080)
     suffix:       appended to the input's basename when no output path is given
-                  (defaults to "_DR.mp4")
+                  (defaults to "_proxy.mp4")
 
     Returns a dict mapping input_path -> output_path (or None on failure).
     """
