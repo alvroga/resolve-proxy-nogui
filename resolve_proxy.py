@@ -182,6 +182,8 @@ def _render_clip(resolve, input_path, output_path, width=DEFAULT_WIDTH, height=D
     print(" done.")
 
     # --- Cleanup this clip's scratch project ---
+    # Must close it first — DeleteProject silently fails on the currently-open project.
+    pm.CloseProject(project)
     pm.DeleteProject(project_name)
 
     # --- Confirm output ---

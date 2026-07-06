@@ -168,3 +168,11 @@ These apply everywhere unless overridden per-call (Python) or per-run (CLI flags
   may avoid this, but wasn't required to get the script working.)
 - **One project per clip.** Each clip gets its own scratch project so a
   failure or quirk on one clip can't contaminate another's render settings.
+- **`DeleteProject` silently fails on the currently-open project.** The
+  scratch project created for each clip is still "current" right after
+  rendering, so it must be closed (`pm.CloseProject(project)`) before
+  `pm.DeleteProject(project_name)` — deleting without closing first is a
+  no-op and leaves the scratch project behind in the Project Manager. Note
+  this only affects the per-clip `PROXY_<filename>` scratch projects — the
+  "Untitled Project" Resolve shows on a fresh launch is Resolve's own default
+  starting project, not something this script creates, and is left alone.
