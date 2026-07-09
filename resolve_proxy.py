@@ -3,7 +3,8 @@ resolve_proxy.py — Headless DaVinci Resolve Studio proxy generator
 
 Standalone module: no OpenCue, no ShareBrowser. Given an input media path
 (including RAW formats Resolve natively decodes — BRAW, RED R3D, Sony X-OCN,
-ARRI, etc.), produces an H.264 .mp4 proxy next to it (or at a given output path).
+ARRI, etc.), produces a proxy next to it (or at a given output path).
+Defaults to H.264 .mp4; pass codec="prores422hq" (etc.) for a ProRes .mov.
 
 Requires: DaVinci Resolve Studio installed locally, with scripting enabled.
 
@@ -43,12 +44,25 @@ RESOLVE_STARTUP_TIMEOUT = 120  # seconds
 
 # ---------------------------------------------------------------------------
 # Default proxy settings — override per-call via function args, or per-run
-# via CLI flags (--width, --height, --suffix, --output-dir). Change these if
-# you want new defaults everywhere.
+# via CLI flags (--width, --height, --codec, --suffix, --output-dir). Change
+# these if you want new defaults everywhere.
 # ---------------------------------------------------------------------------
 DEFAULT_WIDTH   = 1920
 DEFAULT_HEIGHT  = 1080
-DEFAULT_SUFFIX  = "_proxy.mp4"   # appended to the input's basename when no output path is given
+DEFAULT_CODEC   = "h264"
+
+# Codec choices -> Resolve's SetCurrentRenderFormatAndCodec(format, codec)
+# arguments, plus the container extension used to build the default output
+# suffix ("_proxy" + extension) when no explicit suffix/output path is given.
+CODEC_PRESETS = {
+    "h264":           {"format": "mp4", "codec": "H264",           "extension": ".mp4"},
+    "prores422proxy": {"format": "mov", "codec": "ProRes422Proxy", "extension": ".mov"},
+    "prores422lt":    {"format": "mov", "codec": "ProRes422LT",    "extension": ".mov"},
+    "prores422":      {"format": "mov", "codec": "ProRes422",      "extension": ".mov"},
+    "prores422hq":    {"format": "mov", "codec": "ProRes422HQ",    "extension": ".mov"},
+    "prores4444":     {"format": "mov", "codec": "ProRes4444",     "extension": ".mov"},
+    "prores4444xq":   {"format": "mov", "codec": "ProRes4444XQ",   "extension": ".mov"},
+}
 
 if RESOLVE_SCRIPT_PATH not in sys.path:
     sys.path.insert(0, RESOLVE_SCRIPT_PATH)
@@ -102,7 +116,8 @@ def ensure_resolve_running():
     sys.exit(1)
 
 
-def _render_clip(resolve, input_path, output_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+def _render_clip(resolve, input_path, output_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
+                  codec=DEFAULT_CODEC):
     """
     Render a single clip within an already-connected Resolve session.
     Creates and tears down its own scratch project so clips don't interfere
@@ -150,14 +165,17 @@ def _render_clip(resolve, input_path, output_path, width=DEFAULT_WIDTH, height=D
     duration = timeline.GetEndFrame() - timeline.GetStartFrame()
     print(f"  Timeline: {duration} frames")
 
-    # --- Render settings: load H.264 preset base, enforce MP4 output ---
-    presets = project.GetRenderPresets()
-    for name in (list(presets.values()) if presets else []):
-        if "H.264" in name or "H264" in name or "MP4" in name or "YouTube" in name:
-            if project.LoadRenderPreset(name):
-                break
-    # Must come AFTER loading a preset — presets override the container to .mov otherwise
-    project.SetCurrentRenderFormatAndCodec("mp4", "H264")
+    # --- Render settings: load a matching preset base, enforce format/codec ---
+    render_format = CODEC_PRESETS[codec]["format"]
+    render_codec  = CODEC_PRESETS[codec]["codec"]
+    if render_format == "mp4":
+        presets = project.GetRenderPresets()
+        for name in (list(presets.values()) if presets else []):
+            if "H.264" in name or "H264" in name or "MP4" in name or "YouTube" in name:
+                if project.LoadRenderPreset(name):
+                    break
+    # Must come AFTER loading a preset — presets override the format/codec otherwise
+    project.SetCurrentRenderFormatAndCodec(render_format, render_codec)
     project.SetRenderSettings({
         "TargetDir":    output_dir,
         "CustomName":   output_name,
@@ -196,25 +214,29 @@ def _render_clip(resolve, input_path, output_path, width=DEFAULT_WIDTH, height=D
         return None
 
 
-def transcode(input_path, output_path=None, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
-              suffix=DEFAULT_SUFFIX):
+def transcode(input_path, output_path=None, output_dir=None, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
+              codec=DEFAULT_CODEC, suffix=None):
     """
-    Transcode a single input_path to an H.264 .mp4 proxy via headless
-    DaVinci Resolve. Connects, renders, and quits Resolve (if this call
-    launched it) — a convenience wrapper around transcode_batch() for one file.
+    Transcode a single input_path to a proxy via headless DaVinci Resolve.
+    Connects, renders, and quits Resolve (if this call launched it) — a
+    convenience wrapper around transcode_batch() for one file.
+
+    output_dir: optional directory to place the output in (ignored if
+                output_path is given). Created automatically if it doesn't
+                already exist.
 
     Returns the output path on success, or None on failure.
     """
     results = transcode_batch([input_path], output_paths=[output_path] if output_path else None,
-                               width=width, height=height, suffix=suffix)
+                               output_dir=output_dir, width=width, height=height, codec=codec, suffix=suffix)
     return results[input_path]
 
 
 def transcode_batch(input_paths, output_paths=None, output_dir=None,
-                     width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, suffix=DEFAULT_SUFFIX):
+                     width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, codec=DEFAULT_CODEC, suffix=None):
     """
-    Transcode a queue of clips to H.264 .mp4 proxies, launching Resolve only
-    once for the whole batch (much faster than one launch per file).
+    Transcode a queue of clips to proxies, launching Resolve only once for
+    the whole batch (much faster than one launch per file).
 
     input_paths:  list of source media paths (mixed formats OK — BRAW, R3D, MXF, etc.)
     output_paths: optional list of output paths, same length/order as input_paths.
@@ -222,12 +244,21 @@ def transcode_batch(input_paths, output_paths=None, output_dir=None,
                   (or inside output_dir, if given).
     output_dir:   optional directory to place all outputs in (ignored per-file
                   if output_paths is given). Defaults to next to each source file.
+                  Created automatically if it doesn't already exist.
     width/height: proxy resolution (defaults to 1920x1080)
+    codec:        one of CODEC_PRESETS' keys — "h264" (default), "prores422proxy",
+                  "prores422lt", "prores422", "prores422hq", "prores4444", "prores4444xq"
     suffix:       appended to the input's basename when no output path is given
-                  (defaults to "_proxy.mp4")
+                  (defaults to "_proxy" + the chosen codec's container extension,
+                  e.g. "_proxy.mp4" for h264 or "_proxy.mov" for any ProRes flavor)
 
     Returns a dict mapping input_path -> output_path (or None on failure).
     """
+    if codec not in CODEC_PRESETS:
+        raise ValueError(f"Unknown codec '{codec}'. Choices: {', '.join(CODEC_PRESETS)}")
+    if suffix is None:
+        suffix = "_proxy" + CODEC_PRESETS[codec]["extension"]
+
     if output_paths is None:
         output_paths = [None] * len(input_paths)
     if len(output_paths) != len(input_paths):
@@ -243,6 +274,13 @@ def transcode_batch(input_paths, output_paths=None, output_dir=None,
                 output_path = base + suffix
         resolved_outputs.append(output_path)
 
+    # Create each output's destination directory if it doesn't exist yet
+    # (covers --output-dir, an explicit -o/--output, and default output_paths).
+    for output_path in resolved_outputs:
+        dest_dir = os.path.dirname(output_path)
+        if dest_dir:
+            os.makedirs(dest_dir, exist_ok=True)
+
     print("")
     print("DaVinci Resolve")
     resolve, we_launched = ensure_resolve_running()
@@ -254,7 +292,7 @@ def transcode_batch(input_paths, output_paths=None, output_dir=None,
         print("")
         print(f"[{i}/{total}] {os.path.basename(input_path)}")
         print(f"  Output: {output_path}")
-        results[input_path] = _render_clip(resolve, input_path, output_path, width, height)
+        results[input_path] = _render_clip(resolve, input_path, output_path, width, height, codec)
 
     if we_launched:
         resolve.Quit()
@@ -275,12 +313,17 @@ if __name__ == "__main__":
         description="Headless DaVinci Resolve proxy generator (single file or batch)."
     )
     parser.add_argument("inputs", nargs="+", help="one or more source media files")
-    parser.add_argument("-o", "--output", help="explicit output .mp4 path (single-file only)")
-    parser.add_argument("--output-dir", help="directory to place all outputs in (batch)")
+    parser.add_argument("-o", "--output", help="explicit output path (single-file only)")
+    parser.add_argument("--output-dir", help="directory to place all outputs in "
+                                              "(created automatically if it doesn't exist)")
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help=f"proxy width (default {DEFAULT_WIDTH})")
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help=f"proxy height (default {DEFAULT_HEIGHT})")
-    parser.add_argument("--suffix", default=DEFAULT_SUFFIX,
-                         help=f"filename suffix when no explicit output is given (default '{DEFAULT_SUFFIX}')")
+    parser.add_argument("--codec", choices=sorted(CODEC_PRESETS), default=DEFAULT_CODEC,
+                         help=f"render codec (default '{DEFAULT_CODEC}')")
+    parser.add_argument("--suffix", default=None,
+                         help="filename suffix when no explicit output is given "
+                              "(default '_proxy' + the codec's container extension, "
+                              "e.g. '_proxy.mp4' for h264 or '_proxy.mov' for ProRes)")
     args = parser.parse_args()
 
     if args.output and len(args.inputs) > 1:
@@ -293,8 +336,9 @@ if __name__ == "__main__":
 
     if len(args.inputs) == 1:
         print(f"  Input: {args.inputs[0]}")
-        transcode(args.inputs[0], args.output, width=args.width, height=args.height, suffix=args.suffix)
+        transcode(args.inputs[0], args.output, output_dir=args.output_dir, width=args.width, height=args.height,
+                  codec=args.codec, suffix=args.suffix)
     else:
         print(f"  Queue: {len(args.inputs)} file(s)")
         transcode_batch(args.inputs, output_dir=args.output_dir,
-                         width=args.width, height=args.height, suffix=args.suffix)
+                         width=args.width, height=args.height, codec=args.codec, suffix=args.suffix)

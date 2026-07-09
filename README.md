@@ -3,8 +3,9 @@
 Headless DaVinci Resolve Studio proxy generator. No OpenCue, no ShareBrowser,
 no third-party dependencies — a standalone module that turns camera-original
 media (BRAW, RED R3D, Sony X-OCN, ARRI MXF, and anything else Resolve can
-import) into H.264 `.mp4` proxies, driven entirely through the Resolve
-scripting API.
+import) into proxies, driven entirely through the Resolve scripting API.
+Defaults to H.264 `.mp4`; ProRes `.mov` (422 Proxy through 4444 XQ) is
+available via `--codec`.
 
 Handles a single file or a whole queue of mixed-format clips, and runs
 unattended (no GUI window, no user interaction required once started).
@@ -47,18 +48,20 @@ it connects immediately and skips the launch step.
 
 ```
 usage: resolve_proxy.py [-h] [-o OUTPUT] [--output-dir OUTPUT_DIR]
-                        [--width WIDTH] [--height HEIGHT] [--suffix SUFFIX]
+                        [--width WIDTH] [--height HEIGHT] [--codec CODEC]
+                        [--suffix SUFFIX]
                         inputs [inputs ...]
 ```
 
 | Flag | Meaning | Default |
 |---|---|---|
 | `inputs` | one or more source media file paths (required) | — |
-| `-o`, `--output` | explicit output `.mp4` path — **single input file only** | `<input>_proxy.mp4` next to the source |
-| `--output-dir` | directory to place all outputs in — batch only | next to each source file |
+| `-o`, `--output` | explicit output path — **single input file only** | `<input>_proxy<ext>` next to the source |
+| `--output-dir` | directory to place all outputs in (created automatically if missing) | next to each source file |
 | `--width` | proxy width in pixels | `1920` |
 | `--height` | proxy height in pixels | `1080` |
-| `--suffix` | filename suffix used when no explicit output is given | `_proxy.mp4` |
+| `--codec` | render codec — `h264`, `prores422proxy`, `prores422lt`, `prores422`, `prores422hq`, `prores4444`, `prores4444xq` | `h264` |
+| `--suffix` | filename suffix used when no explicit output is given | `_proxy.mp4` for `h264`, `_proxy.mov` for any ProRes codec |
 
 Examples:
 
@@ -68,6 +71,9 @@ python3 resolve_proxy.py clip.braw -o /somewhere/else/proxy.mp4
 
 # custom resolution
 python3 resolve_proxy.py clip.braw --width 1280 --height 720
+
+# ProRes 422 HQ proxy instead of H.264 (output defaults to <name>_proxy.mov)
+python3 resolve_proxy.py clip.braw --codec prores422hq
 
 # batch: dump every proxy into one folder with a custom suffix
 python3 resolve_proxy.py clip1.r3d clip2.mxf clip3.mxf --output-dir /proxies --suffix "_DR.mp4"
@@ -88,6 +94,9 @@ transcode("/path/to/clip.braw")
 transcode("/path/to/clip.braw", output_path="/proxies/clip.mp4")
 transcode("/path/to/clip.braw", width=1280, height=720, suffix="_DR.mp4")
 
+# ProRes instead of H.264 — output defaults to clip_proxy.mov
+transcode("/path/to/clip.braw", codec="prores422hq")
+
 # batch — launches Resolve exactly once for the whole list, not once per clip
 results = transcode_batch([
     "/path/to/clip1.r3d",
@@ -102,15 +111,20 @@ for input_path, output_path in results.items():
 
 ### Function reference
 
-- **`transcode(input_path, output_path=None, width=1920, height=1080, suffix="_proxy.mp4")`**
+- **`transcode(input_path, output_path=None, width=1920, height=1080, codec="h264", suffix=None)`**
   Single-file convenience wrapper around `transcode_batch`. Returns the output
   path, or `None` on failure.
 
-- **`transcode_batch(input_paths, output_paths=None, output_dir=None, width=1920, height=1080, suffix="_proxy.mp4")`**
+- **`transcode_batch(input_paths, output_paths=None, output_dir=None, width=1920, height=1080, codec="h264", suffix=None)`**
   Renders a list of clips in one Resolve session. `output_paths`, if given,
-  must be the same length/order as `input_paths`. Returns a dict mapping each
-  input path to its output path (or `None` if that clip failed) — one failed
-  clip does not stop the rest of the batch.
+  must be the same length/order as `input_paths`. `codec` is one of
+  `CODEC_PRESETS`' keys — `"h264"` (default), `"prores422proxy"`,
+  `"prores422lt"`, `"prores422"`, `"prores422hq"`, `"prores4444"`,
+  `"prores4444xq"`. When `suffix` is left as `None`, it's derived from the
+  codec's container (`_proxy.mp4` for h264, `_proxy.mov` for any ProRes
+  flavor). Returns a dict mapping each input path to its output path (or
+  `None` if that clip failed) — one failed clip does not stop the rest of the
+  batch.
 
 - **`ensure_resolve_running()`**
   Launches Resolve headless (`-nogui`) if it isn't already running, and blocks
@@ -127,10 +141,14 @@ Edit the constants near the top of `resolve_proxy.py`:
 ```python
 DEFAULT_WIDTH   = 1920
 DEFAULT_HEIGHT  = 1080
-DEFAULT_SUFFIX  = "_proxy.mp4"
+DEFAULT_CODEC   = "h264"
 ```
 
-These apply everywhere unless overridden per-call (Python) or per-run (CLI flags).
+These apply everywhere unless overridden per-call (Python) or per-run (CLI
+flags). To add/adjust codec choices, edit the `CODEC_PRESETS` dict — each
+entry maps a `--codec` name to the `(format, codec)` pair passed to Resolve's
+`SetCurrentRenderFormatAndCodec()` plus the container extension used to build
+the default output suffix.
 
 ---
 
@@ -140,9 +158,9 @@ These apply everywhere unless overridden per-call (Python) or per-run (CLI flags
    `-nogui` and polls `DaVinciResolveScript.scriptapp("Resolve")` until the
    scripting API responds.
 2. For each clip: creates a disposable Resolve project, imports the clip,
-   builds a one-clip timeline, forces the render format to MP4/H.264 at the
-   requested resolution, queues and runs the render, then deletes the
-   scratch project.
+   builds a one-clip timeline, forces the render format/codec (MP4/H.264 by
+   default, or a ProRes flavor in MOV via `--codec`) at the requested
+   resolution, queues and runs the render, then deletes the scratch project.
 3. If this script launched Resolve itself, it quits Resolve when the whole
    batch is done. If Resolve was already running (e.g. you have it open), it
    leaves it running.
@@ -168,6 +186,13 @@ These apply everywhere unless overridden per-call (Python) or per-run (CLI flags
   may avoid this, but wasn't required to get the script working.)
 - **One project per clip.** Each clip gets its own scratch project so a
   failure or quirk on one clip can't contaminate another's render settings.
+- **ProRes codec strings are unverified.** The `CODEC_PRESETS` values for
+  ProRes (`ProRes422`, `ProRes422HQ`, etc.) follow Resolve's documented naming
+  convention but haven't been confirmed against a live render. If
+  `SetCurrentRenderFormatAndCodec("mov", ...)` doesn't take, print
+  `project.GetRenderFormats()` and `project.GetRenderCodecs("mov")` in a
+  Python console to see the exact strings your Resolve build expects, and
+  adjust `CODEC_PRESETS` accordingly.
 - **`DeleteProject` silently fails on the currently-open project.** The
   scratch project created for each clip is still "current" right after
   rendering, so it must be closed (`pm.CloseProject(project)`) before
