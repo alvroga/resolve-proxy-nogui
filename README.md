@@ -1,4 +1,4 @@
-# resolve-proxy
+# resolve-proxy-nogui
 
 Headless DaVinci Resolve Studio proxy generator — a small, dependency-free
 reference implementation for driving Resolve's scripting API without a GUI.
