@@ -1,14 +1,17 @@
 # resolve-proxy
 
-Headless DaVinci Resolve Studio proxy generator. No OpenCue, no ShareBrowser,
-no third-party dependencies — a standalone module that turns camera-original
-media (BRAW, RED R3D, Sony X-OCN, ARRI MXF, and anything else Resolve can
-import) into proxies, driven entirely through the Resolve scripting API.
-Defaults to H.264 `.mp4`; ProRes `.mov` (422 Proxy through 4444 XQ) is
-available via `--codec`.
+Headless DaVinci Resolve Studio proxy generator — a small, dependency-free
+reference implementation for driving Resolve's scripting API without a GUI.
+It turns camera-original media (BRAW, RED R3D, Sony X-OCN, ARRI MXF, and
+anything else Resolve can import) into proxies. Defaults to H.264 `.mp4`;
+ProRes `.mov` (422 Proxy through 4444 XQ) is available via `--codec`.
 
 Handles a single file or a whole queue of mixed-format clips, and runs
-unattended (no GUI window, no user interaction required once started).
+unattended (no GUI window, no user interaction once started). It is a single
+file meant to be used as a CLI, imported as a module, or lifted into a larger
+pipeline; the "Known gotchas" below are the hard-won part.
+
+> Research/reference code, shared as-is. Tested on macOS with Resolve Studio.
 
 ---
 
@@ -25,8 +28,8 @@ unattended (no GUI window, no user interaction required once started).
   RESOLVE_BIN          = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/MacOS/Resolve"
   ```
   To port to Windows/Linux: update both to the platform's install paths, and
-  replace the `pgrep -x Resolve` process check in `ensure_resolve_running()`
-  with a platform-appropriate equivalent (e.g. `tasklist` on Windows).
+  replace the `pgrep`/`ps` process checks in `ensure_resolve_running()` with
+  platform-appropriate equivalents (e.g. `tasklist` on Windows).
 
 ## Quick start
 
@@ -39,8 +42,9 @@ python3 resolve_proxy.py "/path/to/clip1.r3d" "/path/to/clip2.mxf" "/path/to/cli
 ```
 
 The first run of the day will pause for ~30–90s while Resolve launches
-headless in the background — that's normal. If Resolve is already running,
-it connects immediately and skips the launch step.
+headless in the background — that's normal. If a headless instance is
+already running, it connects immediately. If Resolve is open with its GUI,
+the script stops with an error — close Resolve first.
 
 ---
 
@@ -131,6 +135,17 @@ for input_path, output_path in results.items():
   until the scripting API responds (up to `RESOLVE_STARTUP_TIMEOUT`, 120s by
   default). Returns `(resolve_instance, we_launched_it)` — the second value
   tells the caller whether it's responsible for quitting Resolve afterward.
+  Raises `RuntimeError` (rather than exiting) if Resolve isn't installed, if
+  Resolve is already open **with its GUI** (scripted renders would hijack the
+  open project, so close it first), or if the API never comes up. A headless
+  instance that never answers is assumed to be a wedged orphan from a crashed
+  run: it is killed and launched once more.
+
+- **`filter_r3d_chunks(paths)`**
+  RED cameras split long takes into `_001.R3D`, `_002.R3D`, … chunks; the first
+  chunk already plays through the rest. This keeps only `_001` per clip (other
+  paths pass through unchanged, order preserved). Run it over a camera-folder
+  listing before `transcode_batch` to avoid redundant renders.
 
 ---
 
@@ -162,8 +177,10 @@ the default output suffix.
    default, or a ProRes flavor in MOV via `--codec`) at the requested
    resolution, queues and runs the render, then deletes the scratch project.
 3. If this script launched Resolve itself, it quits Resolve when the whole
-   batch is done. If Resolve was already running (e.g. you have it open), it
-   leaves it running.
+   batch is done (even if a clip errors). If a headless instance was already
+   running, it reuses and leaves it running. A single clip's render is capped
+   at `RESOLVE_RENDER_TIMEOUT` (1 h); if exceeded, that clip is marked failed
+   and the batch continues.
 
 ## Known gotchas
 
@@ -186,13 +203,12 @@ the default output suffix.
   may avoid this, but wasn't required to get the script working.)
 - **One project per clip.** Each clip gets its own scratch project so a
   failure or quirk on one clip can't contaminate another's render settings.
-- **ProRes codec strings are unverified.** The `CODEC_PRESETS` values for
-  ProRes (`ProRes422`, `ProRes422HQ`, etc.) follow Resolve's documented naming
-  convention but haven't been confirmed against a live render. If
-  `SetCurrentRenderFormatAndCodec("mov", ...)` doesn't take, print
-  `project.GetRenderFormats()` and `project.GetRenderCodecs("mov")` in a
-  Python console to see the exact strings your Resolve build expects, and
-  adjust `CODEC_PRESETS` accordingly.
+- **Codec strings must match Resolve's exact identifiers.** They are not the
+  display names — e.g. ProRes 422 Proxy is `ProRes422P`, not `ProRes422Proxy`.
+  The `CODEC_PRESETS` values were checked against Resolve 21's
+  `project.GetRenderCodecs("mov")`. If a build rejects one, print
+  `project.GetRenderFormats()` and `project.GetRenderCodecs("mov")` to see
+  what it expects and adjust `CODEC_PRESETS`.
 - **`DeleteProject` silently fails on the currently-open project.** The
   scratch project created for each clip is still "current" right after
   rendering, so it must be closed (`pm.CloseProject(project)`) before
@@ -201,3 +217,7 @@ the default output suffix.
   this only affects the per-clip `PROXY_<filename>` scratch projects — the
   "Untitled Project" Resolve shows on a fresh launch is Resolve's own default
   starting project, not something this script creates, and is left alone.
+
+---
+
+Licensed under the [MIT License](LICENSE).
